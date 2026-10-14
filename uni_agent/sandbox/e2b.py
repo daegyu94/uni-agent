@@ -6,8 +6,6 @@ import inspect
 import logging
 import re
 import shlex
-import threading
-from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -15,11 +13,9 @@ from .base import ExecResult, Sandbox, _to_str
 from .registry import register_sandbox
 
 if TYPE_CHECKING:
-    from .base import SandboxConfig
+    from .base import ImageMount, SandboxConfig
 
 logger = logging.getLogger(__name__)
-
-_TEMPLATE_BUILD_LOCKS: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 
 
 def _ensure_template(image: str, cpu_count: int, memory_mb: int) -> str:
@@ -33,15 +29,14 @@ def _ensure_template(image: str, cpu_count: int, memory_mb: int) -> str:
     slug = re.sub(r"[^a-z0-9_-]+", "-", image.lower()).strip("-_")[:64] or "image"
     digest = hashlib.sha256(image.encode()).hexdigest()[:12]
     name = f"uni-agent-{slug}-{cpu_count}c-{memory_mb}mb-{digest}"
-    with _TEMPLATE_BUILD_LOCKS[name]:
-        if not e2b.Template.exists(name):
-            e2b.Template.build(
-                e2b.Template().from_image(image),
-                name,
-                cpu_count=cpu_count,
-                memory_mb=memory_mb,
-                on_build_logs=None,
-            )
+    if not e2b.Template.exists(name):
+        e2b.Template.build(
+            e2b.Template().from_image(image),
+            name,
+            cpu_count=cpu_count,
+            memory_mb=memory_mb,
+            on_build_logs=None,
+        )
     return name
 
 
@@ -57,7 +52,7 @@ class E2BSandbox(Sandbox):
         cpu_count: int = 2,
         memory_mb: int = 4096,
         runtime_timeout: float = 3600.0,
-        user: str | None = None,
+        user: str | None = "root",
         metadata: dict[str, str] | None = None,
         envs: dict[str, str] | None = None,
         secure: bool = True,
@@ -65,6 +60,8 @@ class E2BSandbox(Sandbox):
         network: dict[str, Any] | None = None,
         lifecycle: dict[str, Any] | None = None,
         file_request_timeout: float = 600.0,
+        image_mounts: list[ImageMount] | None = None,
+        executable_paths: dict[str, str] | None = None,
     ) -> None:
         if runtime_timeout <= 0:
             raise ValueError("runtime_timeout must be positive")
@@ -80,6 +77,10 @@ class E2BSandbox(Sandbox):
             raise ValueError("template must be non-empty when provided")
         if image is None and template is None:
             raise ValueError("either image or template must be provided")
+        if image_mounts:
+            raise NotImplementedError(
+                "E2BSandbox does not support image mounts; build a composite E2B template instead"
+            )
 
         self.image = image.strip() if image is not None else None
         self.template = template.strip() if template is not None else None
@@ -94,6 +95,8 @@ class E2BSandbox(Sandbox):
         self.network = network
         self.lifecycle = lifecycle
         self.file_request_timeout = float(file_request_timeout)
+        self.image_mounts = list(image_mounts or [])
+        self.executable_paths = dict(executable_paths or {})
 
         self._sandbox: Any | None = None
         self.sandbox_id: str | None = None
@@ -103,6 +106,8 @@ class E2BSandbox(Sandbox):
         return cls(
             image=config.image,
             runtime_timeout=config.runtime_timeout,
+            image_mounts=config.image_mounts,
+            executable_paths=config.executable_paths,
             **config.sandbox_kwargs,
         )
 
@@ -138,6 +143,7 @@ class E2BSandbox(Sandbox):
         sandbox = await AsyncSandbox.create(**create_kwargs)
         self._sandbox = sandbox
         self.sandbox_id = str(sandbox.sandbox_id)
+        await self._setup_executable_paths(self.executable_paths)
 
     async def stop(self) -> None:
         sandbox, self._sandbox = self._sandbox, None

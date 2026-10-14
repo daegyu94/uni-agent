@@ -198,6 +198,14 @@ Uni-Agent supports multiple sandbox backends. Choose the backend that matches yo
     CPU and memory are part of the generated template name. Changing either
     value builds and uses a separate template.
 
+    Commands and file operations run as `root` by default. Set
+    `sandbox_kwargs.user: null` to use the template's default user instead.
+
+    E2B does not provide OCI image mounts. Build a composite E2B template
+    when the task needs a separate runtime image; configuring `image_mounts`
+    is rejected explicitly. `executable_paths` remains available for binaries
+    already present in the selected image or template.
+
     !!! warning "Gateway reachability"
         Host-side agents such as ReAct only use E2B for tools. Agents launched
         inside the sandbox, such as Claude Code, must be able to reach their
