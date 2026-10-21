@@ -21,6 +21,8 @@ set -euo pipefail
 test -n "${BASE_COMMIT:-}"
 base_commit="$(git rev-parse --verify "${BASE_COMMIT}^{commit}")"
 
+# Image indexes carry build-host stat info; refresh it so reset only rewrites real changes.
+git update-index -q --refresh || true
 git restore .
 git reset --hard "$base_commit"
 git clean -fdq
