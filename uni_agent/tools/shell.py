@@ -196,9 +196,16 @@ class TmuxShell:
     def _chan(self, cid: int) -> str:
         return f"uniagent-{self.session_id}-{cid}"
 
-    async def _read_text(self, path: str) -> str:
-        res = await self.backend.exec(["cat", path])
-        return res.stdout if res.exit_code == 0 else ""
+    async def _read_outputs(self, out: str, err: str) -> tuple[str, str]:
+        """Read the stdout and stderr capture files in one exec; a missing file reads as "".
+
+        The err file arrives on the exec's stderr, so anything the backend transport
+        itself prints there on success (e.g. docker CLI warnings) is included.
+        """
+        res = await self.backend.exec(
+            ["sh", "-c", 'cat -- "$1" 2>/dev/null; { cat -- "$2" 2>/dev/null; } >&2; exit 0', "sh", out, err]
+        )
+        return (res.stdout, res.stderr) if res.exit_code == 0 else ("", "")
 
     # ----- lifecycle -----
     async def start(self) -> None:
@@ -295,12 +302,13 @@ class TmuxShell:
             )
 
         end = time.monotonic()
+        stdout, stderr = await self._read_outputs(out, err)
         return CommandResult(
             command_id=cid,
             command=command,
             exit_code=code,
-            stdout=await self._read_text(out),
-            stderr=await self._read_text(err),
+            stdout=stdout,
+            stderr=stderr,
             start_time=start,
             end_time=end,
             timed_out=timed_out,
