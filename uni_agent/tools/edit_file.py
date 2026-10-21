@@ -110,8 +110,13 @@ class EditFileTool(Tool):
 
     # ----- data-plane helpers -----
     @staticmethod
-    async def _exists(sandbox: SandboxBackend, path: str) -> bool:
-        return (await sandbox.exec(["test", "-e", path])).exit_code == 0
+    async def _path_kind(sandbox: SandboxBackend, path: str) -> str | None:
+        """``"dir"``, ``"file"`` (any other existing entry) or ``None`` if missing, in one exec."""
+        res = await sandbox.exec(
+            ["sh", "-c", 'if [ -d "$1" ]; then echo dir; elif [ -e "$1" ]; then echo file; fi', "sh", path]
+        )
+        kind = res.stdout.strip() if res.exit_code == 0 else ""
+        return kind if kind in ("dir", "file") else None
 
     @staticmethod
     async def _is_dir(sandbox: SandboxBackend, path: str) -> bool:
@@ -147,12 +152,13 @@ class EditFileTool(Tool):
         if not path:
             raise ToolError("Parameter `path` is required.")
 
-        invalid = await self._validate_path(command, sandbox, path)
+        kind = await self._path_kind(sandbox, path)
+        invalid = self._validate_path(command, path, kind)
         if invalid is not None:
             return invalid
 
         if command == "view":
-            return await self._view(sandbox, path, args.get("view_range"))
+            return await self._view(sandbox, path, args.get("view_range"), is_dir=kind == "dir")
         if command == "create":
             return await self._create(sandbox, path, args.get("file_text"))
         if command == "str_replace":
@@ -167,11 +173,12 @@ class EditFileTool(Tool):
             "`view`, `create`, `str_replace`, `insert`, `undo_edit`"
         )
 
-    async def _validate_path(self, command: str, sandbox: SandboxBackend, path: str) -> str | None:
+    @staticmethod
+    def _validate_path(command: str, path: str, kind: str | None) -> str | None:
         if command == "create" and path.endswith("/"):
             return f"The path `{path}` ends with `/`. The `create` command requires a file path."
-        exists = await self._exists(sandbox, path)
-        is_dir = await self._is_dir(sandbox, path) if exists else False
+        exists = kind is not None
+        is_dir = kind == "dir"
         if not exists and command != "create":
             return f"The path `{path}` does not exist. Please provide a valid path."
         if exists and command == "create":
@@ -181,8 +188,8 @@ class EditFileTool(Tool):
         return None
 
     # ----- commands -----
-    async def _view(self, sandbox: SandboxBackend, path: str, view_range: list[int] | None) -> str:
-        if await self._is_dir(sandbox, path):
+    async def _view(self, sandbox: SandboxBackend, path: str, view_range: list[int] | None, *, is_dir: bool) -> str:
+        if is_dir:
             if view_range:
                 return "The `view_range` parameter is not allowed when `path` points to a directory."
             res = await sandbox.exec(["find", path, "-maxdepth", "2", "-not", "-path", "*/.*"])
