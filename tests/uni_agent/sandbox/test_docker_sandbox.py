@@ -433,3 +433,55 @@ def test_upload_and_download_use_docker_cp(monkeypatch, tmp_path: Path):
         ("cp", "agent-test:/workspace/data/result.bin", str(destination)),
     ]
     assert destination.parent.is_dir()
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_write_file_streams_content_over_exec_stdin(monkeypatch):
+    sandbox = DockerSandbox(image="example:local")
+    sandbox._container_name = "agent-test"
+    calls: list[tuple[tuple[str, ...], bytes | None]] = []
+
+    async def fake_run(*args: str, timeout=None, input=None):
+        calls.append((args, input))
+        return _ok()
+
+    monkeypatch.setattr(sandbox, "_run_docker", fake_run)
+    payload = b"\x00\xff" * 500_000  # far above the 128 KiB single-argv limit
+
+    asyncio.run(sandbox.write_file("/workspace/my dir/out.bin", payload))
+    asyncio.run(sandbox.write_file("/workspace/text.txt", "héllo"))
+
+    (args, sent), (_, sent_text) = calls
+    assert args[:3] == ("exec", "-i", "agent-test")
+    assert args[3:5] == ("bash", "-c")
+    assert args[5] == "mkdir -p \"$(dirname '/workspace/my dir/out.bin')\" && cat > '/workspace/my dir/out.bin'"
+    assert sent == payload
+    assert sent_text == "héllo".encode()
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_write_file_raises_on_nonzero_exit(monkeypatch):
+    sandbox = DockerSandbox(image="example:local")
+    sandbox._container_name = "agent-test"
+
+    async def fake_run(*args: str, timeout=None, input=None):
+        return ExecResult(exit_code=1, stdout="", stderr="Permission denied\n")
+
+    monkeypatch.setattr(sandbox, "_run_docker", fake_run)
+
+    with pytest.raises(RuntimeError, match=r"write_file '/ro/out' failed: Permission denied"):
+        asyncio.run(sandbox.write_file("/ro/out", b"data"))
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_run_docker_feeds_input_to_stdin():
+    # `cat` stands in for the docker CLI so the stdin plumbing runs for real.
+    sandbox = DockerSandbox(image="example:local", docker_binary="cat")
+
+    result = asyncio.run(sandbox._run_docker(input=b"streamed\n"))
+
+    assert result.exit_code == 0
+    assert result.stdout == "streamed\n"
